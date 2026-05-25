@@ -1,0 +1,368 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0
+// © FX_EMA_Strategy
+
+//@version=5
+strategy(
+     title          = "13/20/75 EMA クラウド戦略",
+     shorttitle     = "EMA Cloud Strategy",
+     overlay        = true,
+     initial_capital = 100000,
+     currency       = currency.JPY,
+     default_qty_type  = strategy.fixed,
+     default_qty_value = 10000,
+     commission_type   = strategy.commission.cash_per_contract,
+     commission_value  = 0.002,
+     slippage          = 0,
+     max_boxes_count   = 500,
+     max_lines_count   = 500,
+     max_labels_count  = 500
+ )
+
+// ══════════════════════════════════════════
+// ユーザー設定
+// ══════════════════════════════════════════
+
+// EMA 期間
+ema13_len = input.int(13, title="EMA 13 期間", group="EMA 設定")
+ema20_len = input.int(20, title="EMA 20 期間", group="EMA 設定")
+ema75_len = input.int(75, title="EMA 75 期間", group="EMA 設定")
+
+// EMA 色
+ema13_color  = input.color(color.new(#00E676, 0),  title="EMA 13 カラー",     group="EMA 設定")
+ema20_color  = input.color(color.new(#FFD600, 0),  title="EMA 20 カラー",     group="EMA 設定")
+ema75_color  = input.color(color.new(#FF1744, 0),  title="EMA 75 カラー",     group="EMA 設定")
+ema13h_color = input.color(color.new(#00BFA5, 60), title="EMA 13高値 カラー", group="EMA 設定")
+ema13l_color = input.color(color.new(#00BFA5, 60), title="EMA 13安値 カラー", group="EMA 設定")
+
+// EMA 線幅
+ema13_width = input.int(2, title="EMA 13 線幅", minval=1, maxval=5, group="EMA 設定")
+ema20_width = input.int(2, title="EMA 20 線幅", minval=1, maxval=5, group="EMA 設定")
+ema75_width = input.int(2, title="EMA 75 線幅", minval=1, maxval=5, group="EMA 設定")
+
+// クラウド色
+cloud_bull_color = input.color(color.new(#00C853, 75), title="クラウド色（GC後）", group="クラウド設定")
+cloud_bear_color = input.color(color.new(#D50000, 75), title="クラウド色（DC後）",  group="クラウド設定")
+
+// レンジフィルター設定
+slope_lookback  = input.int(3,      title="① 20EMA 傾き判定バー数",              minval=1, maxval=20,   group="レンジフィルター設定")
+slope_threshold = input.float(0.03, title="① 20EMA 最低傾き（pips）",            minval=0.0, step=0.01, group="レンジフィルター設定")
+adx_length      = input.int(14,     title="② ADX 期間",                          minval=1,              group="レンジフィルター設定")
+adx_threshold   = input.int(20,     title="② ADX レンジ判定閾値（以下がレンジ）", minval=1,             group="レンジフィルター設定")
+cloud_min_width = input.float(0.05, title="③ 最小クラウド幅（pips）",             minval=0.0, step=0.01, group="レンジフィルター設定")
+range_box_color  = input.color(color.new(#FF6F00, 80), title="レンジ枠 塗り色",   group="レンジフィルター設定")
+range_box_border = input.color(color.new(#FF6F00,  0), title="レンジ枠 枠線色",   group="レンジフィルター設定")
+
+// TP/SL 設定
+sl_lookback  = input.int(10,     title="直近高安値の探索バー数",                   minval=1, maxval=100, group="TP/SL 設定")
+rr_ratio     = input.float(1.5,  title="リスクリワード比率（例：1.5 = RR1:1.5）",  minval=0.1, step=0.1,  group="TP/SL 設定")
+max_sl_pips  = input.float(10.0, title="最大許容SL幅（pips）※超えたらスキップ",   minval=0.1, step=0.5, group="TP/SL 設定")
+show_tp_sl   = input.bool(true,  title="TP/SL ラインを表示",                       group="TP/SL 設定")
+tp_color     = input.color(color.new(#00C853, 0), title="TP ライン色",             group="TP/SL 設定")
+sl_color_cfg = input.color(color.new(#D50000, 0), title="SL ライン色",             group="TP/SL 設定")
+tp_sl_width  = input.int(1,      title="TP/SL ライン幅", minval=1, maxval=3,       group="TP/SL 設定")
+tp_sl_bars   = input.int(10,     title="TP/SL ラインの表示バー数", minval=1, maxval=50, group="TP/SL 設定")
+
+// トレード時間帯フィルター
+use_session  = input.bool(true,        title="時間帯フィルターを使用",              group="時間帯設定")
+session_str  = input.session("0900-2100", title="トレード時間帯",                   group="時間帯設定")
+
+// ラベル表示
+show_labels = input.bool(true, title="右端ラベルを表示", group="表示設定")
+
+// ══════════════════════════════════════════
+// 時間帯フィルター
+// ══════════════════════════════════════════
+in_session = not use_session or time(timeframe.period, session_str, "Asia/Tokyo") != 0
+
+// ══════════════════════════════════════════
+// EMA 計算
+// ══════════════════════════════════════════
+ema13      = ta.ema(close, ema13_len)
+ema13_high = ta.ema(high,  ema13_len)
+ema13_low  = ta.ema(low,   ema13_len)
+ema20      = ta.ema(close, ema20_len)
+ema75      = ta.ema(close, ema75_len)
+
+// ══════════════════════════════════════════
+// クロス判定
+// ══════════════════════════════════════════
+golden_cross = ta.crossover(ema20, ema75)
+dead_cross   = ta.crossunder(ema20, ema75)
+
+var bool is_bullish_cloud = na
+if golden_cross
+    is_bullish_cloud := true
+if dead_cross
+    is_bullish_cloud := false
+
+// ══════════════════════════════════════════
+// レンジ判定
+// ══════════════════════════════════════════
+ema20_slope_pips = (ema20 - ema20[slope_lookback]) * 100
+range_by_slope   = math.abs(ema20_slope_pips) < slope_threshold
+
+[_diplus, _diminus, adx_val] = ta.dmi(adx_length, adx_length)
+range_by_adx = adx_val < adx_threshold
+
+cloud_width    = math.abs(ema20 - ema75) * 100
+range_by_cloud = cloud_width < cloud_min_width
+
+is_range = range_by_slope or range_by_adx or range_by_cloud
+
+// レンジボックス描画
+var int   range_start = na
+var float range_high  = na
+var float range_low   = na
+
+if is_range
+    if na(range_start)
+        range_start := bar_index
+    range_high := na(range_high) ? high : math.max(range_high, high)
+    range_low  := na(range_low)  ? low  : math.min(range_low,  low)
+else
+    if not na(range_start)
+        box.new(
+             left=range_start, top=range_high,
+             right=bar_index - 1, bottom=range_low,
+             border_color=range_box_border, border_width=2,
+             bgcolor=range_box_color)
+        label.new(
+             x=math.round((range_start + bar_index - 1) / 2),
+             y=range_high,
+             text="RANGE", style=label.style_label_down,
+             color=color.new(#FF6F00, 0), textcolor=color.white, size=size.small)
+        range_start := na
+        range_high  := na
+        range_low   := na
+
+// ══════════════════════════════════════════
+// エントリー条件
+// ══════════════════════════════════════════
+ema20_slope_up   = ema20_slope_pips > 0
+ema20_slope_down = ema20_slope_pips < 0
+
+// ── ロング ──
+cond_long_cloud = is_bullish_cloud == true
+cond_long_ema20 = ema20_slope_up and close > ema20
+
+var bool touched_below_long = false
+if close < ema13_low
+    touched_below_long := true
+
+long_entry_raw = cond_long_cloud and cond_long_ema20 and
+                 touched_below_long and close > ema13_high
+
+long_sl_price = ta.lowest(low, sl_lookback)
+long_sl_pips  = (close - long_sl_price) * 100
+long_sl_ok    = long_sl_pips <= max_sl_pips
+
+long_entry = long_entry_raw and long_sl_ok and in_session and not is_range and strategy.position_size == 0
+
+if long_entry_raw
+    touched_below_long := false
+if is_bullish_cloud == false
+    touched_below_long := false
+
+// ── ショート ──
+cond_short_cloud = is_bullish_cloud == false
+cond_short_ema20 = ema20_slope_down and close < ema20
+
+var bool touched_above_short = false
+if close > ema13_high
+    touched_above_short := true
+
+short_entry_raw = cond_short_cloud and cond_short_ema20 and
+                  touched_above_short and close < ema13_low
+
+short_sl_price = ta.highest(high, sl_lookback)
+short_sl_pips  = (short_sl_price - close) * 100
+short_sl_ok    = short_sl_pips <= max_sl_pips
+
+short_entry = short_entry_raw and short_sl_ok and in_session and not is_range and strategy.position_size == 0
+
+if short_entry_raw
+    touched_above_short := false
+if is_bullish_cloud == true
+    touched_above_short := false
+
+// スキップサイン
+long_skip  = long_entry_raw  and not long_sl_ok
+short_skip = short_entry_raw and not short_sl_ok
+
+// ══════════════════════════════════════════
+// TP / SL 価格の計算
+// ══════════════════════════════════════════
+var float entry_price_saved = na
+var float tp_price_saved    = na
+var float sl_price_saved    = na
+
+if long_entry
+    entry_price_saved := close
+    sl_price_saved    := long_sl_price
+    tp_price_saved    := close + (close - long_sl_price) * rr_ratio
+
+if short_entry
+    entry_price_saved := close
+    sl_price_saved    := short_sl_price
+    tp_price_saved    := close - (short_sl_price - close) * rr_ratio
+
+// ポジションがなくなったらリセット
+if strategy.position_size == 0 and not long_entry and not short_entry
+    entry_price_saved := na
+    tp_price_saved    := na
+    sl_price_saved    := na
+
+// ══════════════════════════════════════════
+// オーダー発行
+// ══════════════════════════════════════════
+if long_entry
+    strategy.entry("Long", strategy.long)
+    strategy.exit("Long Exit",
+         from_entry = "Long",
+         limit      = close + (close - long_sl_price) * rr_ratio,   // TP (RR 1:rr_ratio)
+         stop       = long_sl_price)                      // SL
+
+if short_entry
+    strategy.entry("Short", strategy.short)
+    strategy.exit("Short Exit",
+         from_entry = "Short",
+         limit      = close - (short_sl_price - close) * rr_ratio,  // TP (RR 1:rr_ratio)
+         stop       = short_sl_price)                     // SL
+
+// ══════════════════════════════════════════
+// TP/SL ライン描画
+// ══════════════════════════════════════════
+if long_entry and show_tp_sl
+    _ep = close
+    _sl = long_sl_price
+    _tp = _ep + (_ep - _sl) * rr_ratio
+
+    line.new(x1=bar_index, y1=_tp,
+             x2=bar_index + tp_sl_bars, y2=_tp,
+             color=tp_color, width=tp_sl_width, style=line.style_dashed)
+    label.new(x=bar_index + tp_sl_bars, y=_tp,
+              text="TP " + str.tostring(math.round(_tp, 3), "#.000"),
+              style=label.style_label_left,
+              color=tp_color, textcolor=color.white, size=size.small)
+
+    line.new(x1=bar_index, y1=_sl,
+             x2=bar_index + tp_sl_bars, y2=_sl,
+             color=sl_color_cfg, width=tp_sl_width, style=line.style_dashed)
+    label.new(x=bar_index + tp_sl_bars, y=_sl,
+              text="SL " + str.tostring(math.round(_sl, 3), "#.000"),
+              style=label.style_label_left,
+              color=sl_color_cfg, textcolor=color.white, size=size.small)
+
+    line.new(x1=bar_index, y1=_ep,
+             x2=bar_index + tp_sl_bars, y2=_ep,
+             color=color.new(color.white, 30), width=1, style=line.style_dotted)
+    label.new(x=bar_index + tp_sl_bars, y=_ep,
+              text="Entry " + str.tostring(math.round(_ep, 3), "#.000"),
+              style=label.style_label_left,
+              color=color.new(color.white, 30), textcolor=color.black, size=size.small)
+
+if short_entry and show_tp_sl
+    _ep = close
+    _sl = short_sl_price
+    _tp = _ep - (_sl - _ep) * rr_ratio
+
+    line.new(x1=bar_index, y1=_tp,
+             x2=bar_index + tp_sl_bars, y2=_tp,
+             color=tp_color, width=tp_sl_width, style=line.style_dashed)
+    label.new(x=bar_index + tp_sl_bars, y=_tp,
+              text="TP " + str.tostring(math.round(_tp, 3), "#.000"),
+              style=label.style_label_left,
+              color=tp_color, textcolor=color.white, size=size.small)
+
+    line.new(x1=bar_index, y1=_sl,
+             x2=bar_index + tp_sl_bars, y2=_sl,
+             color=sl_color_cfg, width=tp_sl_width, style=line.style_dashed)
+    label.new(x=bar_index + tp_sl_bars, y=_sl,
+              text="SL " + str.tostring(math.round(_sl, 3), "#.000"),
+              style=label.style_label_left,
+              color=sl_color_cfg, textcolor=color.white, size=size.small)
+
+    line.new(x1=bar_index, y1=_ep,
+             x2=bar_index + tp_sl_bars, y2=_ep,
+             color=color.new(color.white, 30), width=1, style=line.style_dotted)
+    label.new(x=bar_index + tp_sl_bars, y=_ep,
+              text="Entry " + str.tostring(math.round(_ep, 3), "#.000"),
+              style=label.style_label_left,
+              color=color.new(color.white, 30), textcolor=color.black, size=size.small)
+
+// ══════════════════════════════════════════
+// プロット
+// ══════════════════════════════════════════
+cloud_color = is_bullish_cloud == true  ? cloud_bull_color :
+              is_bullish_cloud == false ? cloud_bear_color :
+              na
+
+p20 = plot(ema20, title="EMA 20", color=ema20_color, linewidth=ema20_width)
+p75 = plot(ema75, title="EMA 75", color=ema75_color, linewidth=ema75_width)
+fill(p20, p75, color=cloud_color, title="EMA クラウド")
+
+plot(ema13,      title="EMA 13（終値）", color=ema13_color,  linewidth=ema13_width)
+plot(ema13_high, title="EMA 13（高値）", color=ema13h_color, linewidth=1)
+plot(ema13_low,  title="EMA 13（安値）", color=ema13l_color, linewidth=1)
+
+// クロスシグナル
+plotshape(golden_cross, title="ゴールデンクロス",
+     location=location.belowbar, style=shape.labelup,
+     color=color.new(#00C853, 0), textcolor=color.white,
+     text="GC", size=size.small)
+
+plotshape(dead_cross, title="デッドクロス",
+     location=location.abovebar, style=shape.labeldown,
+     color=color.new(#D50000, 0), textcolor=color.white,
+     text="DC", size=size.small)
+
+// エントリーサイン（有効）
+plotshape(long_entry, title="ロングエントリー",
+     location=location.belowbar, style=shape.triangleup,
+     color=color.new(#00E676, 0), size=size.normal)
+
+plotshape(short_entry, title="ショートエントリー",
+     location=location.abovebar, style=shape.triangledown,
+     color=color.new(#FF1744, 0), size=size.normal)
+
+// スキップサイン（グレー）
+plotshape(long_skip, title="ロングスキップ（SL幅超過）",
+     location=location.belowbar, style=shape.triangleup,
+     color=color.new(#9E9E9E, 0), size=size.normal)
+
+plotshape(short_skip, title="ショートスキップ（SL幅超過）",
+     location=location.abovebar, style=shape.triangledown,
+     color=color.new(#9E9E9E, 0), size=size.normal)
+
+// 背景色
+bgcolor(long_entry  ? color.new(color.green, 80) : na, title="ロングエントリー背景")
+bgcolor(short_entry ? color.new(color.red,   80) : na, title="ショートエントリー背景")
+bgcolor(long_skip or short_skip ? color.new(color.gray, 85) : na, title="スキップ背景")
+
+// ══════════════════════════════════════════
+// 右端ラベル
+// ══════════════════════════════════════════
+if show_labels and barstate.islast
+    label.new(x=bar_index, y=ema13,
+         text="EMA 13\n" + str.tostring(math.round(ema13, 3), "#.000"),
+         style=label.style_label_left,
+         color=ema13_color, textcolor=color.black, size=size.small)
+    label.new(x=bar_index, y=ema20,
+         text="EMA 20\n" + str.tostring(math.round(ema20, 3), "#.000"),
+         style=label.style_label_left,
+         color=ema20_color, textcolor=color.black, size=size.small)
+    label.new(x=bar_index, y=ema75,
+         text="EMA 75\n" + str.tostring(math.round(ema75, 3), "#.000"),
+         style=label.style_label_left,
+         color=ema75_color, textcolor=color.black, size=size.small)
+
+// ══════════════════════════════════════════
+// 全体トレンド背景
+// ══════════════════════════════════════════
+bullish_align = ema13 > ema20 and ema20 > ema75
+bearish_align = ema13 < ema20 and ema20 < ema75
+
+bgcolor(
+     bullish_align ? color.new(color.green, 95) :
+     bearish_align ? color.new(color.red,   95) : na,
+     title="トレンド背景色")
